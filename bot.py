@@ -1,7 +1,7 @@
 import os
 import json
 import io
-import csv
+import time
 import requests
 from PIL import Image
 import matplotlib
@@ -84,16 +84,23 @@ def procesar_con_gemini(texto_usuario, total_actual, resumen_gastos, lista_recor
     if imagen_pil:
         contents.append(imagen_pil)
 
-    try:
-        response = ai_client.models.generate_content(
-            model='gemini-3.8-flash',
-            contents=contents,
-            config=types.GenerateContentConfig(response_mime_type="application/json")
-        )
-        return json.loads(response.text)
-    except Exception as e:
-        print("ERROR REAL EN GEMINI:", str(e))
-        return {"tipo": "chat", "respuesta": f"⚠️ Error técnico de Gemini: {str(e)}"}
+    intentos = 3
+    for intento in range(intentos):
+        try:
+            response = ai_client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=contents,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
+            )
+            return json.loads(response.text)
+        except Exception as e:
+            error_str = str(e)
+            if ("503" in error_str or "UNAVAILABLE" in error_str) and intento < intentos - 1:
+                print(f"Intento {intento + 1} fallido por alta demanda (503). Reintentando en 2 segundos...")
+                time.sleep(2)
+                continue
+            print("ERROR REAL EN GEMINI:", error_str)
+            return {"tipo": "chat", "respuesta": f"⚠️ Error técnico de Gemini: {error_str}"}
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
