@@ -1,0 +1,6 @@
+requests
+psycopg2-binary
+flask
+google-genai
+matplotlib
+Pillow
