@@ -54,9 +54,9 @@ def procesar_con_gemini(texto_usuario, total_actual, resumen_gastos, lista_recor
     5. "reiniciar_gastos": Si pide reiniciar o borrar todos los gastos del mes.
     6. "borrar_recordatorio": Si pide eliminar un recordatorio por completo. Extrae: palabra_clave_borrar.
     7. "consultar_finanzas": Si el usuario pregunta por sus gastos o resumen del mes. 
-       - IMPORTANTE: Redacta en la propiedad 'respuesta' un mensaje MUY BONITO, elegante, ordenado con emojis, detallando el total (${total_actual:,.0f}) y un desglose amigable de los movimientos.
+        - IMPORTANTE: Redacta en la propiedad 'respuesta' un mensaje MUY BONITO, elegante, ordenado con emojis, detallando el total (${total_actual:,.0f}) y un desglose amigable de los movimientos.
     8. "consultar_recordatorios": Si el usuario pregunta qué pendientes tiene o qué falta por hacer. 
-       - IMPORTANTE: Redacta en la propiedad 'respuesta' un mensaje MUY BONITO, motivador y ordenado con emojis listando cada tarea pendiente y su fecha/hora basada en: {lista_recordatorios}. Si está vacía, felicítalo con alegría.
+        - IMPORTANTE: Redacta en la propiedad 'respuesta' un mensaje MUY BONITO, motivador y ordenado con emojis listando cada tarea pendiente y su fecha/hora basada en: {lista_recordatorios}. Si está vacía, felicítalo con alegría.
     9. "chat": Conversación general, saludos, preguntas o consejos de ahorro. Redacta la 'respuesta'.
 
     Contexto actual:
@@ -92,97 +92,106 @@ def procesar_con_gemini(texto_usuario, total_actual, resumen_gastos, lista_recor
         )
         return json.loads(response.text)
     except Exception as e:
-        print("Error en Gemini Multimodal:", e)
-        return {"tipo": "chat", "respuesta": "Disculpa, tuve un pequeño inconveniente procesando tu solicitud. Inténtalo de nuevo."}
+        print("ERROR REAL EN GEMINI:", str(e))
+        return {"tipo": "chat", "respuesta": f"⚠️ Error técnico de Gemini: {str(e)}"}
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
-    datos = request.get_json()
-    
-    if "message" in datos:
-        message = datos["message"]
-        chat_id = message.get("chat", {}).get("id")
-        texto = message.get("text", "").strip()
-        photo = message.get("photo")
-        caption = message.get("caption", "").strip()
+    try:
+        datos = request.get_json()
         
-        if chat_id:
-            # Comando manual /start de bienvenida
-            if texto == "/start":
-                enviar_mensaje(
-                    chat_id,
-                    "¡Hola! Soy tu asistente personal inteligente 🤖🧠💰.\n\n"
-                    "Háblame con total naturalidad:\n"
-                    "• *Gastos:* 'Gasté 30 mil en cena' o mándame foto de un recibo 📸\n"
-                    "• *Recordatorios:* 'Recuérdame pagar el internet el viernes a las 3pm'\n"
-                    "• *Confirmar tareas:* 'Ya pagué el internet' (para tacharlo)\n"
-                    "• *Consultas:* '¿Qué tengo pendiente?' o '¿Cuánto llevo gastado?'\n"
-                    "• *Gestión:* 'Borra el último gasto' o 'Reinicia los gastos del mes'"
+        if "message" in datos:
+            message = datos["message"]
+            chat_id = message.get("chat", {}).get("id")
+            texto = message.get("text", "").strip()
+            photo = message.get("photo")
+            caption = message.get("caption", "").strip()
+            
+            if chat_id:
+                if texto == "/start":
+                    enviar_mensaje(
+                        chat_id,
+                        "¡Hola! Soy tu asistente personal inteligente 🤖🧠💰.\n\n"
+                        "Háblame con total naturalidad:\n"
+                        "• *Gastos:* 'Gasté 30 mil en cena' o mándame foto de un recibo 📸\n"
+                        "• *Recordatorios:* 'Recuérdame pagar el internet el viernes a las 3pm'\n"
+                        "• *Confirmar tareas:* 'Ya pagué el internet' (para tacharlo)\n"
+                        "• *Consultas:* '¿Qué tengo pendiente?' o '¿Cuánto llevo gastado?'\n"
+                        "• *Gestión:* 'Borra el último gasto' o 'Reinicia los gastos del mes'"
+                    )
+                    return "OK", 200
+
+                imagen_pil = None
+                texto_a_evaluar = texto
+                
+                if photo:
+                    file_id = photo[-1]["file_id"]
+                    imagen_pil = descargar_foto_telegram(file_id)
+                    texto_a_evaluar = caption if caption else "Analiza esta foto de recibo o gasto"
+
+                rows_gastos, total_gastos = obtener_resumen_mes()
+                recordatorios_activos = obtener_recordatorios(chat_id)
+                
+                resultado = procesar_con_gemini(
+                    texto_a_evaluar, total_gastos, rows_gastos, recordatorios_activos, imagen_pil
                 )
-                return "OK", 200
+                tipo = resultado.get("tipo")
+                
+                if tipo == "gasto":
+                    monto = resultado.get("monto", 0)
+                    cat = resultado.get("categoria", "General")
+                    desc = resultado.get("descripcion", "Gasto registrado")
+                    if monto > 0:
+                        guardar_gasto(monto, cat, desc)
+                        origen = " 📸 (capturado de foto)" if imagen_pil else ""
+                        enviar_mensaje(chat_id, f"✨ *¡Gasto registrado con éxito!{origen}*\n\n💰 *Monto:* ${monto:,.0f}\n📂 *Categoría:* {cat}\n📝 *Detalle:* {desc}\n\n_¡Sigue así manteniendo tus finanzas al día!_ 🚀")
+                    else:
+                        enviar_mensaje(chat_id, "Hmm, no logré detectar un monto claro. ¿Podrías indicármelo de nuevo?")
 
-            imagen_pil = None
-            texto_a_evaluar = texto
-            
-            if photo:
-                file_id = photo[-1]["file_id"]
-                imagen_pil = descargar_foto_telegram(file_id)
-                texto_a_evaluar = caption if caption else "Analiza esta foto de recibo o gasto"
+                elif tipo == "recordatorio":
+                    titulo = resultado.get("titulo_recordatorio", "Tarea")
+                    fhora = resultado.get("fecha_hora", "Próximamente")
+                    guardar_recordatorio(chat_id, titulo, fhora)
+                    enviar_mensaje(chat_id, f"📌 *¡Nuevo recordatorio agendado!*\n\n🎯 *Tarea:* {titulo}\n📅 *Cuándo:* {fhora}\n\n_Te avisaré en cuanto sea el momento._ ⏰")
 
-            rows_gastos, total_gastos = obtener_resumen_mes()
-            recordatorios_activos = obtener_recordatorios(chat_id)
-            
-            resultado = procesar_con_gemini(
-                texto_a_evaluar, total_gastos, rows_gastos, recordatorios_activos, imagen_pil
-            )
-            tipo = resultado.get("tipo")
-            
-            if tipo == "gasto":
-                monto = resultado.get("monto", 0)
-                cat = resultado.get("categoria", "General")
-                desc = resultado.get("descripcion", "Gasto registrado")
-                if monto > 0:
-                    guardar_gasto(monto, cat, desc)
-                    origen = " 📸 (capturado de foto)" if imagen_pil else ""
-                    enviar_mensaje(chat_id, f"✨ *¡Gasto registrado con éxito!{origen}*\n\n💰 *Monto:* ${monto:,.0f}\n📂 *Categoría:* {cat}\n📝 *Detalle:* {desc}\n\n_¡Sigue así manteniendo tus finanzas al día!_ 🚀")
-                else:
-                    enviar_mensaje(chat_id, "Hmm, no logré detectar un monto claro. ¿Podrías indicármelo de nuevo?")
+                elif tipo == "completar_recordatorio":
+                    palabra = resultado.get("palabra_clave_completar", "")
+                    if palabra and completar_recordatorio_por_titulo(chat_id, palabra):
+                        enviar_mensaje(chat_id, f"🎉 *¡Excelente trabajo!*\n\nHe marcado como completado y retirado de tus pendientes todo lo relacionado con '*{palabra}*'. ¡Un pendiente menos en tu lista! 🌟")
+                    else:
+                        enviar_mensaje(chat_id, f"No encontré ningún pendiente activo exacto con la palabra '{palabra}', ¡pero me alegra mucho si ya lo tachaste de tu lista! ✨")
 
-            elif tipo == "recordatorio":
-                titulo = resultado.get("titulo_recordatorio", "Tarea")
-                fhora = resultado.get("fecha_hora", "Próximamente")
-                guardar_recordatorio(chat_id, titulo, fhora)
-                enviar_mensaje(chat_id, f"📌 *¡Nuevo recordatorio agendado!*\n\n🎯 *Tarea:* {titulo}\n📅 *Cuándo:* {fhora}\n\n_Te avisaré en cuanto sea el momento._ ⏰")
+                elif tipo == "borrar_ultimo_gasto":
+                    if borrar_ultimo_gasto():
+                        enviar_mensaje(chat_id, "🗑️ *¡Listo!* He eliminado el último gasto que habías registrado.")
+                    else:
+                        enviar_mensaje(chat_id, "No encontré ningún gasto registrado recientemente para eliminar.")
 
-            elif tipo == "completar_recordatorio":
-                palabra = resultado.get("palabra_clave_completar", "")
-                if palabra and completar_recordatorio_por_titulo(chat_id, palabra):
-                    enviar_mensaje(chat_id, f"🎉 *¡Excelente trabajo!*\n\nHe marcado como completado y retirado de tus pendientes todo lo relacionado con '*{palabra}*'. ¡Un pendiente menos en tu lista! 🌟")
-                else:
-                    enviar_mensaje(chat_id, f"No encontré ningún pendiente activo exacto con la palabra '{palabra}', ¡pero me alegra mucho si ya lo tachaste de tu lista! ✨")
+                elif tipo == "reiniciar_gastos":
+                    reiniciar_gastos_mes()
+                    enviar_mensaje(chat_id, "🔄 *¡Borrón y cuenta nueva!*\n\nHe reiniciado todos tus gastos de este mes a cero. Empezamos de nuevo con tus finanzas. 💡")
 
-            elif tipo == "borrar_ultimo_gasto":
-                if borrar_ultimo_gasto():
-                    enviar_mensaje(chat_id, "🗑️ *¡Listo!* He eliminado el último gasto que habías registrado.")
-                else:
-                    enviar_mensaje(chat_id, "No encontré ningún gasto registrado recientemente para eliminar.")
+                elif tipo == "borrar_recordatorio":
+                    palabra = resultado.get("palabra_clave_borrar", "")
+                    if palabra and borrar_recordatorio_por_titulo(chat_id, palabra):
+                        enviar_mensaje(chat_id, f"🗑️ He eliminado por completo el recordatorio relacionado con '*{palabra}*'.")
+                    else:
+                        enviar_mensaje(chat_id, f"No encontré ningún recordatorio que coincida con '{palabra}'.")
 
-            elif tipo == "reiniciar_gastos":
-                reiniciar_gastos_mes()
-                enviar_mensaje(chat_id, "🔄 *¡Borrón y cuenta nueva!*\n\nHe reiniciado todos tus gastos de este mes a cero. Empezamos de nuevo con tus finanzas. 💡")
+                elif tipo in ["consultar_finanzas", "consultar_recordatorios", "chat"]:
+                    respuesta_ia = resultado.get("respuesta", "¡Entendido!")
+                    enviar_mensaje(chat_id, respuesta_ia)
 
-            elif tipo == "borrar_recordatorio":
-                palabra = resultado.get("palabra_clave_borrar", "")
-                if palabra and borrar_recordatorio_por_titulo(chat_id, palabra):
-                    enviar_mensaje(chat_id, f"🗑️ He eliminado por completo el recordatorio relacionado con '*{palabra}*'.")
-                else:
-                    enviar_mensaje(chat_id, f"No encontré ningún recordatorio que coincida con '{palabra}'.")
-
-            elif tipo in ["consultar_finanzas", "consultar_recordatorios", "chat"]:
-                respuesta_ia = resultado.get("respuesta", "¡Entendido!")
-                enviar_mensaje(chat_id, respuesta_ia)
-
-    return "OK", 200
+        return "OK", 200
+    except Exception as e:
+        print("ERROR CRÍTICO EN WEBHOOK:", str(e))
+        try:
+            chat_id = datos.get("message", {}).get("chat", {}).get("id")
+            if chat_id:
+                enviar_mensaje(chat_id, f"⚠️ *Error interno en el servidor:* `{str(e)}`")
+        except:
+            pass
+        return "OK", 200
 
 @app.route("/", methods=["GET"])
 def index():
